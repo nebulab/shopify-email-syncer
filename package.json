@@ -1,0 +1,33 @@
+{
+  "name": "shopify-email-syncer",
+  "version": "0.1.0",
+  "description": "Sync local Shopify notification-email templates (Liquid) into a store's Admin editor via Playwright — the templates Shopify exposes no API for",
+  "type": "module",
+  "bin": {
+    "shopify-email-syncer": "bin/shopify-email-syncer.mjs"
+  },
+  "files": [
+    "bin"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "playwright-core": "^1.62.1"
+  },
+  "keywords": [
+    "shopify",
+    "notification",
+    "email",
+    "templates",
+    "liquid",
+    "playwright",
+    "cli"
+  ],
+  "author": "Nebulab",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nebulab/shopify-email-syncer.git"
+  }
+}
