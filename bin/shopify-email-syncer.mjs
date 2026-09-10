@@ -272,8 +272,14 @@ async function writeEditor(page, content) {
   return 'keyboard';
 }
 
+// The contextual save bar. Resolved in one place because the pre-save proof
+// and the click have to be about the same element: two copies of the regex
+// could drift, and the proof would then be about a bar we never click. Same
+// argument as subjectField below.
+const saveBar = (page) => page.getByRole('button', { name: /^(save|salva)$/i }).first();
+
 async function save(page) {
-  const saveButton = page.getByRole('button', { name: /^(save|salva)$/i }).first();
+  const saveButton = saveBar(page);
   await saveButton.click();
   // The contextual save bar retracting is Shopify's own "persisted" signal —
   // a bar that never retracts (validation error, dead session) is a failure,
@@ -473,9 +479,7 @@ async function processTemplate(handle, file, label, settleMs) {
   // The bar exists only while the form is dirty, so waiting for it is real
   // evidence the app saw the edit. The settle then gives its state time to
   // catch up, and the re-read refuses to save a body that drifted meanwhile.
-  await page
-    .getByRole('button', { name: /^(save|salva)$/i })
-    .first()
+  await saveBar(page)
     .waitFor({ state: 'visible', timeout: 30_000 })
     .catch(() => {
       throw new Error('pre-save: the save bar never appeared, so the edit never registered');
