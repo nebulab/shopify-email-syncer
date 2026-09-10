@@ -201,6 +201,19 @@ if (only && only !== true) {
   }
 }
 
+// How long to let Admin's form state absorb a programmatic edit before
+// clicking Save, and how many attempts a handle gets (the settle grows with
+// each attempt).
+//
+// The wait length is not the lever, which is worth knowing before anyone
+// tunes it: first attempts have been measured racing identically at 1.5s, 3s
+// and 6s against two different stores, and an extra warm-up load of the edit
+// page did not help either. What lands a paste is retrying it and checking
+// the server afterwards, so the escalation below is a hedge and the
+// verification is the guarantee.
+const SETTLE_MS = 3000;
+const ATTEMPTS = 4;
+
 // --- Editor plumbing ---------------------------------------------------
 
 // The body editor is CodeMirror 6 today (verified 2026-09); the other
@@ -343,8 +356,40 @@ const context = await chromium.launchPersistentContext(profileDir, {
   headless: false,
   channel: 'chrome', // use installed Google Chrome; no browser download needed
   viewport: { width: 1440, height: 900 },
+  // Playwright defaults chromiumSandbox to false, which puts --no-sandbox on
+  // Chrome's command line and buys a permanent "you are using an unsupported
+  // command-line flag" bar across the top of the window. Nothing here needs
+  // the sandbox off.
+  chromiumSandbox: true,
+  // Chrome offers to restore the previous session whenever a run ended
+  // without a clean shutdown. The bubble opens over the top-right corner,
+  // which is where Admin keeps Save, so it is in the way and not just noise.
+  args: ['--hide-crash-restore-bubble'],
+  // Drops the "Chrome is being controlled by automated test software" bar.
+  ignoreDefaultArgs: ['--enable-automation'],
 });
 const page = context.pages()[0] ?? (await context.newPage());
+
+// Chrome only marks its profile clean when it is closed properly, and a dirty
+// profile is what makes it offer to restore pages on the next run. So close it
+// however we leave, a Ctrl+C mid-sweep included.
+let browserClosed = false;
+async function closeBrowser() {
+  if (browserClosed) return;
+  browserClosed = true;
+  await context.close().catch(() => {});
+}
+for (const [signal, code] of [['SIGINT', 130], ['SIGTERM', 143]]) {
+  process.on(signal, async () => {
+    await closeBrowser();
+    process.exit(code);
+  });
+}
+process.on('unhandledRejection', async (err) => {
+  console.error(err);
+  await closeBrowser();
+  process.exit(1);
+});
 
 // Login gate: land on the store home and wait until the session is real.
 console.log(`Opening admin for ${store} — log in in the browser window if asked.`);
@@ -353,7 +398,7 @@ try {
   await page.waitForURL(new RegExp(`admin\\.shopify\\.com/store/${store}`), { timeout: 900_000 });
 } catch {
   console.error(`Never reached admin.shopify.com/store/${store} — wrong --store handle, or the login was not completed. Current URL: ${page.url()}`);
-  await context.close();
+  await closeBrowser();
   process.exit(1);
 }
 console.log('Session OK.\n');
@@ -372,7 +417,7 @@ async function maybeSendTest(label, handle) {
   }
 }
 
-async function processTemplate(handle, file, label) {
+async function processTemplate(handle, file, label, settleMs) {
   const raw = await readFile(path.join(TEMPLATES_DIR, file), 'utf8');
   const body = normalize(raw);
   const subject = parseSubject(raw);
@@ -417,11 +462,28 @@ async function processTemplate(handle, file, label) {
 
   if (subjectDiffers) await (await subjectField(page)).fill(subject);
   const via = bodyDiffers ? await writeEditor(page, body) : null;
-  // Let the page's form state absorb the programmatic edits before saving:
-  // clicking Save in the same tick can submit stale state — observed in the
-  // wild, with Shopify toasting "Notification template saved" while
-  // persisting the OLD body+subject.
-  await page.waitForTimeout(1500);
+
+  // Two silent failure modes sit between the write and the save, so the edit
+  // gets proven registered rather than assumed:
+  //   1. Shopify's contextual save bar submits form state that has not caught
+  //      up with the editor, toasting "Notification template saved" while
+  //      persisting the OLD body+subject;
+  //   2. the app re-hydrates the editor with the currently saved body under
+  //      us, so the save writes back what was already there.
+  // The bar exists only while the form is dirty, so waiting for it is real
+  // evidence the app saw the edit. The settle then gives its state time to
+  // catch up, and the re-read refuses to save a body that drifted meanwhile.
+  await page
+    .getByRole('button', { name: /^(save|salva)$/i })
+    .first()
+    .waitFor({ state: 'visible', timeout: 30_000 })
+    .catch(() => {
+      throw new Error('pre-save: the save bar never appeared, so the edit never registered');
+    });
+  await page.waitForTimeout(settleMs);
+  if (bodyDiffers && (await readEditorStable(page)) !== body) {
+    throw new Error('pre-save: the editor stopped holding what we wrote (re-hydrated)');
+  }
   await save(page);
 
   // Prove SERVER state: reload and re-read. The in-page editor still holds
@@ -442,20 +504,23 @@ for (const handle of handles) {
   const file = TEMPLATES[handle];
   const label = `${handle} (${file})`;
   let failure = null;
-  for (let attempt = 1; attempt <= 2; attempt++) {
+  for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
     try {
-      await processTemplate(handle, file, label);
+      await processTemplate(handle, file, label, SETTLE_MS * attempt);
       failure = null;
       break;
     } catch (err) {
       failure = err;
-      // A post-save mismatch (the save race) and an editor that never
-      // hydrated (a cold Chrome painting a huge body) are both transient.
+      // The save race (either side of the save) and an editor that never
+      // hydrated (a cold Chrome painting a huge body) are all transient.
       // Nothing has been recorded for this handle yet (the throws precede
-      // every results push), so one clean retry — fresh page load, fresh
-      // comparison — is safe and usually heals it.
-      if (attempt === 1 && /post-save|never hydrated/.test(err.message)) {
-        console.warn(`  ↻ ${label}: ${err.message} — retrying once`);
+      // every results push), so a clean retry is safe: fresh page load, fresh
+      // comparison, and a longer settle each time. Retries are normal here
+      // rather than a sign of trouble: first attempts race often, and one
+      // store burned two attempts in a run and then saved untouched on the
+      // next run.
+      if (attempt < ATTEMPTS && /pre-save|post-save|never hydrated/.test(err.message)) {
+        console.warn(`  ↻ ${label}: ${err.message}. Retrying with a ${((SETTLE_MS * (attempt + 1)) / 1000).toFixed(1)}s settle`);
         continue;
       }
       break;
@@ -473,5 +538,5 @@ if (results.failed.length) console.log(`Failed: ${results.failed.join(', ')}`);
 if (results.testsFailed.length) console.log(`Test send failed: ${results.testsFailed.join(', ')}`);
 console.log('Subjects are parsed from each file\'s {% comment %} header and pasted along with the body.');
 
-await context.close();
+await closeBrowser();
 process.exit(results.failed.length || results.testsFailed.length ? 1 : 0);

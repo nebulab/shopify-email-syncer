@@ -125,11 +125,21 @@ truth: only the templates it lists are processed.
   edit. If the editor content can't be read (it never hydrated, or the handle
   doesn't exist on the store), the template fails instead of being
   overwritten.
-- **Saves are verified against the server.** After Save, the page is reloaded
-  and the body + subject re-read: the in-page editor still holds whatever was
-  written even when the save request failed, so only a post-reload match
-  counts as success. Transient failures (a save race, a slow cold-Chrome
-  hydration) are retried once.
+- **Saves are verified against the server, on both sides of the click.**
+  Before Save, the contextual save bar has to appear (it exists only while the
+  form is dirty, so it is evidence Admin registered the edit) and the editor
+  has to still hold what was written, which catches Admin re-hydrating it.
+  After Save, the page is reloaded and the body + subject re-read: the in-page
+  editor still holds whatever was written even when the save request failed,
+  so only a post-reload match counts as success.
+- **Retries are expected, not a warning sign.** Admin regularly retracts the
+  save bar while persisting the *old* body, so each handle gets four attempts
+  with a longer settle each time, and a `↻` line in the output just means an
+  attempt was caught and redone. Waiting longer is not the fix: first attempts
+  have been measured racing identically at 1.5s, 3s and 6s settles, and a
+  warm-up load of the edit page did not help either. A handle reported as
+  `FAILED` has had **nothing** written to it, which `--dry-run` confirms by
+  reporting the pre-sync character count.
 - **Editor-agnostic.** Writes through CodeMirror 6 (the Admin editor today),
   with fallbacks for Ace, CodeMirror 5, a plain textarea, and — last resort —
   synthesized keyboard input, in case Shopify swaps the editor again.
