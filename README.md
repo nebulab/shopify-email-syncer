@@ -137,9 +137,16 @@ truth: only the templates it lists are processed.
   with a longer settle each time, and a `↻` line in the output just means an
   attempt was caught and redone. Waiting longer is not the fix: first attempts
   have been measured racing identically at 1.5s, 3s and 6s settles, and a
-  warm-up load of the edit page did not help either. A handle reported as
-  `FAILED` has had **nothing** written to it, which `--dry-run` confirms by
-  reporting the pre-sync character count.
+  warm-up load of the edit page did not help either.
+- **What a `FAILED` handle means.** Nothing was written **if it failed before
+  the save**, which is every `pre-save:` and `never hydrated` error. A
+  `post-save` failure is different: Admin accepted a save and persisted
+  something, and since the subject is filled before Save while the body is
+  checked first afterwards, a handle whose subject *and* body both changed can
+  be left holding the new subject with the old body. Re-run it, and if the
+  re-run does not clear it, check the subject field in Admin as well.
+  `--dry-run` compares the body, so it will not tell you that a subject
+  already landed.
 - **Editor-agnostic.** Writes through CodeMirror 6 (the Admin editor today),
   with fallbacks for Ace, CodeMirror 5, a plain textarea, and — last resort —
   synthesized keyboard input, in case Shopify swaps the editor again.
