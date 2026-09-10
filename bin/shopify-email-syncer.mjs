@@ -18,7 +18,7 @@ import path from 'node:path';
 import process from 'node:process';
 import { chromium } from 'playwright-core';
 
-const VERSION = '0.1.0';
+const VERSION = '0.2.0';
 
 const HELP = `shopify-email-syncer v${VERSION}
 
